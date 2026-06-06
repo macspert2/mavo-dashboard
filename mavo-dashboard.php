@@ -337,51 +337,103 @@ class Mavo_Dashboard {
 		return $series;
 	}
 
-	/** Render a tiny inline-SVG line sparkline for a series of points. */
-	private function sparkline( $points ) {
+	/** Site-wide monthly totals (post_id = 0). Cached per request. */
+	private function fetch_totals() {
+		global $wpdb;
+		static $cache = null;
+		if ( null !== $cache ) {
+			return $cache;
+		}
+		$cache = array();
+		if ( ! $this->table_exists() ) {
+			return $cache;
+		}
+		$table = $this->table();
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
+		$rows = $wpdb->get_results( "SELECT snapshot_month, views FROM {$table} WHERE post_id = 0 ORDER BY snapshot_month ASC" );
+		foreach ( (array) $rows as $r ) {
+			$cache[] = array(
+				'month' => $r->snapshot_month,
+				'views' => (int) $r->views,
+			);
+		}
+		return $cache;
+	}
+
+	/**
+	 * Render a tiny inline-SVG line sparkline.
+	 * Draws the site-wide totals line (post_id = 0) behind the post line, each
+	 * normalised independently to the full height so both peaks reach the top.
+	 * The x-axis is shared by month, so the post line sits on the correct part
+	 * of the timeline; the post line is drawn last so it reads as continuous.
+	 */
+	private function sparkline( $points, $totals = array() ) {
 		if ( count( $points ) < 2 ) {
 			return '<span class="mavo-dash-na">—</span>';
 		}
-		$vals = array_map(
-			static function ( $p ) {
-				return (int) $p['views'];
-			},
-			$points
-		);
-		$w     = 120;
-		$h     = 30;
-		$pad   = 3;
-		$min   = min( $vals );
-		$max   = max( $vals );
-		$range = ( $max - $min ) ?: 1;
-		$n     = count( $vals );
+		$w   = 120;
+		$h   = 30;
+		$pad = 3;
 
-		$coords = array();
-		foreach ( array_values( $vals ) as $i => $v ) {
-			$x        = $pad + ( $i / ( $n - 1 ) ) * ( $w - 2 * $pad );
-			$y        = $pad + ( 1 - ( $v - $min ) / $range ) * ( $h - 2 * $pad );
-			$coords[] = round( $x, 1 ) . ',' . round( $y, 1 );
+		// Shared month axis: prefer the (complete) totals timeline.
+		$axis_source = ( count( $totals ) >= 2 ) ? $totals : $points;
+		$month_index = array();
+		foreach ( $axis_source as $i => $p ) {
+			$month_index[ $p['month'] ] = $i;
 		}
-		$poly        = implode( ' ', $coords );
-		$last_xy     = explode( ',', end( $coords ) );
-		$last_value  = end( $vals );
-		$first_month = $points[0]['month'];
-		$last_month  = $points[ count( $points ) - 1 ]['month'];
-		$title       = sprintf(
+		$denom = max( 1, count( $axis_source ) - 1 );
+
+		// Build a polyline (each series normalised to its own min/max).
+		$build = function ( $series ) use ( $month_index, $denom, $w, $h, $pad ) {
+			$vals  = array();
+			foreach ( $series as $p ) {
+				$vals[] = (int) $p['views'];
+			}
+			$min   = min( $vals );
+			$max   = max( $vals );
+			$range = ( $max - $min ) ?: 1;
+			$out   = array();
+			foreach ( array_values( $series ) as $i => $p ) {
+				$idx = isset( $month_index[ $p['month'] ] ) ? $month_index[ $p['month'] ] : $i;
+				$x   = $pad + ( $idx / $denom ) * ( $w - 2 * $pad );
+				$y   = $pad + ( 1 - ( ( (int) $p['views'] - $min ) / $range ) ) * ( $h - 2 * $pad );
+				$out[] = round( $x, 1 ) . ',' . round( $y, 1 );
+			}
+			return $out;
+		};
+
+		$post_coords = $build( $points );
+		$post_poly   = implode( ' ', $post_coords );
+		$last_xy     = explode( ',', end( $post_coords ) );
+
+		$totals_line = '';
+		if ( count( $totals ) >= 2 ) {
+			$totals_line = sprintf(
+				'<polyline fill="none" stroke="#dba617" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" points="%s" />',
+				esc_attr( implode( ' ', $build( $totals ) ) )
+			);
+		}
+
+		$post_vals   = array();
+		foreach ( $points as $p ) {
+			$post_vals[] = (int) $p['views'];
+		}
+		$title = sprintf(
 			/* translators: 1: first month, 2: last month, 3: latest value */
-			__( '%1$s → %2$s · latest (3-mo rolling): %3$s views', 'mavo-dashboard' ),
-			$first_month,
-			$last_month,
-			number_format_i18n( $last_value )
+			__( '%1$s → %2$s · latest (3-mo rolling): %3$s views · gold line = all-site total', 'mavo-dashboard' ),
+			$points[0]['month'],
+			$points[ count( $points ) - 1 ]['month'],
+			number_format_i18n( end( $post_vals ) )
 		);
 
 		return sprintf(
-			'<svg class="mavo-spark" viewBox="0 0 %1$d %2$d" width="%1$d" height="%2$d" preserveAspectRatio="none" role="img" aria-label="%6$s"><title>%6$s</title><polyline fill="none" stroke="#2271b1" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="%3$s" /><circle cx="%4$s" cy="%5$s" r="2" fill="#2271b1" /></svg>',
+			'<svg class="mavo-spark" viewBox="0 0 %1$d %2$d" width="%1$d" height="%2$d" preserveAspectRatio="none" role="img" aria-label="%7$s"><title>%7$s</title>%6$s<polyline fill="none" stroke="#2271b1" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="%3$s" /><circle cx="%4$s" cy="%5$s" r="2" fill="#2271b1" /></svg>',
 			$w,
 			$h,
-			esc_attr( $poly ),
+			esc_attr( $post_poly ),
 			esc_attr( $last_xy[0] ),
 			esc_attr( $last_xy[1] ),
+			$totals_line, // already escaped above
 			esc_attr( $title )
 		);
 	}
@@ -443,7 +495,8 @@ class Mavo_Dashboard {
 			}
 		);
 
-		// One batched query for the whole list's view history.
+		// One batched query for the whole list's view history, plus the
+		// site-wide totals series (post_id = 0) drawn behind each line.
 		$series = $this->fetch_series(
 			array_map(
 				static function ( $r ) {
@@ -452,6 +505,7 @@ class Mavo_Dashboard {
 				$rows
 			)
 		);
+		$totals = $this->fetch_totals();
 
 		ob_start();
 		?>
@@ -509,7 +563,7 @@ class Mavo_Dashboard {
 					<td><?php echo esc_html( $this->meta_display( $p->ID, MAVO_META_BPUL ) ); ?></td>
 					<td><?php echo esc_html( $this->meta_display( $p->ID, MAVO_META_MAJ ) ); ?></td>
 					<td class="num mavo-views"><?php echo esc_html( number_format_i18n( $r['views'] ) ); ?></td>
-					<td class="mavo-trend"><?php echo $this->sparkline( isset( $series[ $p->ID ] ) ? $series[ $p->ID ] : array() ); // phpcs:ignore WordPress.Security.EscapeOutput ?></td>
+					<td class="mavo-trend"><?php echo $this->sparkline( isset( $series[ $p->ID ] ) ? $series[ $p->ID ] : array(), $totals ); // phpcs:ignore WordPress.Security.EscapeOutput ?></td>
 				</tr>
 			<?php endforeach; ?>
 			</tbody>
