@@ -32,6 +32,15 @@ if ( ! defined( 'MAVO_META_MAJ' ) ) {
 	define( 'MAVO_META_MAJ', '_mavo_maj_key' );
 }
 
+/**
+ * Monthly view-history table (the WordPress prefix, e.g. wp_, is prepended
+ * automatically). Columns used: post_id, snapshot_month (DATE, YYYY-MM-01),
+ * views. Each row is a 3-month rolling total ending in snapshot_month.
+ */
+if ( ! defined( 'MAVO_VIEWS_TABLE' ) ) {
+	define( 'MAVO_VIEWS_TABLE', 'rpp_monthly_snapshots' );
+}
+
 class Mavo_Dashboard {
 
 	const CAP   = 'edit_posts';      // who may see the dashboard
@@ -242,6 +251,101 @@ class Mavo_Dashboard {
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* View history (sparkline)                                             */
+	/* ------------------------------------------------------------------ */
+
+	/** Fully-qualified history table name. */
+	private function table() {
+		global $wpdb;
+		return $wpdb->prefix . MAVO_VIEWS_TABLE;
+	}
+
+	/** Does the history table exist? Cached per request. */
+	private function table_exists() {
+		global $wpdb;
+		static $exists = null;
+		if ( null === $exists ) {
+			$t      = $this->table();
+			$exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t );
+		}
+		return $exists;
+	}
+
+	/**
+	 * Fetch the monthly view series for many posts in one query.
+	 * Returns: array( post_id => array( array( 'month' => 'YYYY-MM-01', 'views' => int ), ... ) )
+	 * ordered chronologically.
+	 */
+	private function fetch_series( $post_ids ) {
+		global $wpdb;
+		$series = array();
+		$post_ids = array_filter( array_map( 'absint', (array) $post_ids ) );
+		if ( empty( $post_ids ) || ! $this->table_exists() ) {
+			return $series;
+		}
+		$ids   = implode( ',', $post_ids ); // already cast to ints
+		$table = $this->table();            // from constant, not user input
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
+		$rows = $wpdb->get_results( "SELECT post_id, snapshot_month, views FROM {$table} WHERE post_id IN ({$ids}) ORDER BY snapshot_month ASC" );
+		foreach ( (array) $rows as $r ) {
+			$series[ (int) $r->post_id ][] = array(
+				'month' => $r->snapshot_month,
+				'views' => (int) $r->views,
+			);
+		}
+		return $series;
+	}
+
+	/** Render a tiny inline-SVG line sparkline for a series of points. */
+	private function sparkline( $points ) {
+		if ( count( $points ) < 2 ) {
+			return '<span class="mavo-dash-na">—</span>';
+		}
+		$vals = array_map(
+			static function ( $p ) {
+				return (int) $p['views'];
+			},
+			$points
+		);
+		$w     = 120;
+		$h     = 30;
+		$pad   = 3;
+		$min   = min( $vals );
+		$max   = max( $vals );
+		$range = ( $max - $min ) ?: 1;
+		$n     = count( $vals );
+
+		$coords = array();
+		foreach ( array_values( $vals ) as $i => $v ) {
+			$x        = $pad + ( $i / ( $n - 1 ) ) * ( $w - 2 * $pad );
+			$y        = $pad + ( 1 - ( $v - $min ) / $range ) * ( $h - 2 * $pad );
+			$coords[] = round( $x, 1 ) . ',' . round( $y, 1 );
+		}
+		$poly        = implode( ' ', $coords );
+		$last_xy     = explode( ',', end( $coords ) );
+		$last_value  = end( $vals );
+		$first_month = $points[0]['month'];
+		$last_month  = $points[ count( $points ) - 1 ]['month'];
+		$title       = sprintf(
+			/* translators: 1: first month, 2: last month, 3: latest value */
+			__( '%1$s → %2$s · latest (3-mo rolling): %3$s views', 'mavo-dashboard' ),
+			$first_month,
+			$last_month,
+			number_format_i18n( $last_value )
+		);
+
+		return sprintf(
+			'<svg class="mavo-spark" viewBox="0 0 %1$d %2$d" width="%1$d" height="%2$d" preserveAspectRatio="none" role="img" aria-label="%6$s"><title>%6$s</title><polyline fill="none" stroke="#2271b1" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="%3$s" /><circle cx="%4$s" cy="%5$s" r="2" fill="#2271b1" /></svg>',
+			$w,
+			$h,
+			esc_attr( $poly ),
+			esc_attr( $last_xy[0] ),
+			esc_attr( $last_xy[1] ),
+			esc_attr( $title )
+		);
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* AJAX                                                                 */
 	/* ------------------------------------------------------------------ */
 
@@ -298,6 +402,16 @@ class Mavo_Dashboard {
 			}
 		);
 
+		// One batched query for the whole list's view history.
+		$series = $this->fetch_series(
+			array_map(
+				static function ( $r ) {
+					return $r['p']->ID;
+				},
+				$rows
+			)
+		);
+
 		ob_start();
 		?>
 		<p class="mavo-posts-head">
@@ -326,6 +440,7 @@ class Mavo_Dashboard {
 					<th><?php esc_html_e( 'bpul', 'mavo-dashboard' ); ?></th>
 					<th><?php esc_html_e( 'maj', 'mavo-dashboard' ); ?></th>
 					<th class="mavo-views"><?php esc_html_e( 'Views', 'mavo-dashboard' ); ?></th>
+					<th class="mavo-trend"><?php esc_html_e( 'Trend (3-mo rolling)', 'mavo-dashboard' ); ?></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -353,6 +468,7 @@ class Mavo_Dashboard {
 					<td><?php echo esc_html( $this->meta_display( $p->ID, MAVO_META_BPUL ) ); ?></td>
 					<td><?php echo esc_html( $this->meta_display( $p->ID, MAVO_META_MAJ ) ); ?></td>
 					<td class="num mavo-views"><?php echo esc_html( number_format_i18n( $r['views'] ) ); ?></td>
+					<td class="mavo-trend"><?php echo $this->sparkline( isset( $series[ $p->ID ] ) ? $series[ $p->ID ] : array() ); // phpcs:ignore WordPress.Security.EscapeOutput ?></td>
 				</tr>
 			<?php endforeach; ?>
 			</tbody>
@@ -566,6 +682,8 @@ class Mavo_Dashboard {
 .mavo-table tbody tr:hover { background: #f6f7f7; }
 .mavo-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .mavo-table .mavo-views { font-weight: 700; }
+.mavo-table .mavo-trend { width: 130px; }
+.mavo-spark { display: block; overflow: visible; }
 .mavo-table .mavo-slug { color: #50575e; font-family: Menlo, Consolas, monospace; font-size: 12px; }
 .mavo-table .mavo-thumb img { display: block; width: 44px; height: 44px; object-fit: cover; border-radius: 4px; }
 .mavo-post-row.active { background: #e7f0f7 !important; box-shadow: inset 3px 0 0 #2271b1; }
