@@ -141,21 +141,62 @@ class Mavo_Dashboard {
 	/* Data queries                                                        */
 	/* ------------------------------------------------------------------ */
 
-	/** Top 50 post_tags by occurrence for the given language. */
-	private function top_tags( $lang ) {
+	/**
+	 * The predefined, curated tag slugs shown in part 1, in display order.
+	 * Filterable via the 'mavo_dashboard_tag_slugs' hook.
+	 */
+	private function dashboard_tag_slugs() {
+		$slugs = array(
+			'europe', 'angleterre', 'londres', 'ecosse', 'pays-de-galles', 'irlande',
+			'italie', 'espagne', 'andalousie', 'grece', 'allemagne', 'danemark',
+			'norvege', 'portugal', 'suisse', 'croatie', 'montenegro', 'belgique',
+			'malte', 'sicile', 'pays-bas', 'pologne', 'suede', 'autriche', 'bosnie',
+			'france', 'paris', 'pays-de-la-loire-et-centre-val-de-loire', 'bretagne',
+			'sud-ouest', 'alpes', 'outre-mer', 'normandie', 'corse',
+			'bourgogne-franche-comte', 'ile-de-france', 'provence-et-cote-dazur',
+			'grand-est', 'hauts-de-france', 'auvergne-rhone', 'europe-en-en', 'italy',
+			'spain', 'greece', 'denmark', 'malta', 'netherlands', 'uk', 'sri-lanka',
+			'europa', 'england-de', 'frankreich', 'griechenland', 'italien', 'kroatien',
+			'schottland', 'spanien', 'asie', 'ameriques', 'afrique', 'oceanie',
+			'tour-du-monde-2016', 'vivre-en-angleterre', 'rando', 'wanderung',
+			'hiking', 'velo', 'bebe', 'campervan', 'bateau', 'ski',
+		);
+		return apply_filters( 'mavo_dashboard_tag_slugs', $slugs );
+	}
+
+	/**
+	 * The curated tags as term objects, in the predefined order.
+	 * Slugs that don't exist are skipped. Languages are not filtered here —
+	 * the list deliberately spans languages.
+	 */
+	private function dashboard_tags() {
+		$slugs = $this->dashboard_tag_slugs();
+		if ( empty( $slugs ) ) {
+			return array();
+		}
 		$args = array(
 			'taxonomy'   => 'post_tag',
-			'orderby'    => 'count',
-			'order'      => 'DESC',
-			'number'     => 50,
-			'hide_empty' => true,
+			'slug'       => $slugs,
+			'hide_empty' => false,
 		);
 		if ( function_exists( 'pll_languages_list' ) ) {
-			// '' tells Polylang "all languages".
-			$args['lang'] = ( 'all' === $lang ) ? '' : $lang;
+			$args['lang'] = ''; // all languages, so curated cross-language tags all appear
 		}
 		$terms = get_terms( $args );
-		return is_wp_error( $terms ) ? array() : $terms;
+		if ( is_wp_error( $terms ) || empty( $terms ) ) {
+			return array();
+		}
+		$by_slug = array();
+		foreach ( $terms as $t ) {
+			$by_slug[ $t->slug ] = $t;
+		}
+		$ordered = array();
+		foreach ( $slugs as $s ) {
+			if ( isset( $by_slug[ $s ] ) ) {
+				$ordered[] = $by_slug[ $s ];
+			}
+		}
+		return $ordered;
 	}
 
 	/** All published posts carrying $tag_id, scoped to $lang. */
@@ -456,7 +497,7 @@ class Mavo_Dashboard {
 							<?php echo esc_html( get_the_title( $p ) ); ?>
 						</a>
 					</td>
-					<td class="mavo-slug"><?php echo esc_html( $p->post_name ); ?></td>
+					<td class="mavo-slug"><a href="<?php echo esc_url( get_edit_post_link( $p->ID ) ); ?>" target="_blank" rel="noopener"><?php echo esc_html( $p->post_name ); ?></a></td>
 					<td><?php echo esc_html( get_the_date( 'Y-m-d', $p ) ); ?></td>
 					<td class="mavo-thumb"><?php echo $thumb ? $thumb : '<span class="mavo-dash-na">&mdash;</span>'; // phpcs:ignore WordPress.Security.EscapeOutput ?></td>
 					<td class="num"><?php echo esc_html( number_format_i18n( $a['words'] ) ); ?></td>
@@ -560,7 +601,7 @@ class Mavo_Dashboard {
 			return;
 		}
 		$lang      = $this->current_lang();
-		$tags      = $this->top_tags( $lang );
+		$tags      = $this->dashboard_tags();
 		$first_tag = ! empty( $tags ) ? (int) $tags[0]->term_id : 0;
 
 		// Pre-render parts 2 & 3 so the page is useful without a click.
