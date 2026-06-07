@@ -20,7 +20,7 @@ class Mavo_Link_Map {
 	const CAP_REBUILD = 'manage_options'; // who may rebuild the table
 	const NONCE       = 'mavo_link_map';
 	const SLUG        = 'mavo-link-map';
-	const BATCH       = 50;               // posts processed per rebuild request
+	const BATCH       = 25;               // posts processed per rebuild request
 	const OPTION_BUILT = 'mavo_links_last_built';
 
 	/** Tags excluded from this screen (kept on screen 1). */
@@ -342,14 +342,15 @@ class Mavo_Link_Map {
 			wp_send_json_error( array(), 403 );
 		}
 		global $wpdb;
-		$offset = isset( $_POST['offset'] ) ? absint( $_POST['offset'] ) : 0;
-		$batch  = self::BATCH;
+		$after = isset( $_POST['after'] ) ? absint( $_POST['after'] ) : 0;
+		$batch = self::BATCH;
 
+		// Keyset pagination by ID (robust, index-friendly, no OFFSET).
 		$ids = $wpdb->get_col(
 			$wpdb->prepare(
-				"SELECT ID FROM {$wpdb->posts} WHERE post_type = 'post' AND post_status = 'publish' ORDER BY ID ASC LIMIT %d OFFSET %d",
-				$batch,
-				$offset
+				"SELECT ID FROM {$wpdb->posts} WHERE post_type = 'post' AND post_status = 'publish' AND ID > %d ORDER BY ID ASC LIMIT %d",
+				$after,
+				$batch
 			)
 		);
 
@@ -393,23 +394,31 @@ class Mavo_Link_Map {
 				}
 			}
 		}
+		$got  = count( $ids );
+		$last = $got ? (int) end( $ids ) : $after;
+		++$stats['batches'];
+		$stats['last_id'] = $last;
+		if ( count( $stats['log'] ) < 200 ) {
+			$stats['log'][] = 'after=' . $after . ' got=' . $got . ' lastID=' . $last;
+		}
 		$this->insert_links( $rows );
-		set_transient( self::OPTION_BUILT . '_stats', $stats, DAY_IN_SECONDS );
 
-		$processed = $offset + count( $ids );
-		$done      = count( $ids ) < $batch;
+		$done = $got < $batch;
 		if ( $done ) {
-			$total_links     = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->table()}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
-			$stats['time']   = time();
-			$stats['links']  = $total_links;
+			$total_links    = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->table()}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
+			$stats['time']  = time();
+			$stats['links'] = $total_links;
 			update_option( self::OPTION_BUILT, $stats, false );
 			delete_transient( self::OPTION_BUILT . '_stats' );
+		} else {
+			set_transient( self::OPTION_BUILT . '_stats', $stats, DAY_IN_SECONDS );
 		}
 
 		wp_send_json_success(
 			array(
-				'processed' => $processed,
+				'processed' => (int) $stats['posts'],
 				'done'      => $done,
+				'after'     => $last,
 				'built'     => $done ? $this->built_label() : '',
 			)
 		);
@@ -441,6 +450,8 @@ class Mavo_Link_Map {
 		return array(
 			'total'              => 0,
 			'posts'              => 0,
+			'batches'            => 0,
+			'last_id'            => 0,
 			'internal'           => 0,
 			'resolved'           => 0,
 			'booking'            => 0,
@@ -448,6 +459,7 @@ class Mavo_Link_Map {
 			'other'              => 0,
 			'unresolved_samples' => array(),
 			'other_samples'      => array(),
+			'log'                => array(),
 		);
 	}
 
@@ -532,7 +544,18 @@ class Mavo_Link_Map {
 									)
 								);
 								?>
+								<?php echo esc_html( sprintf( ' · batches: %d', (int) ( $diag['batches'] ?? 0 ) ) ); ?>
 							</p>
+							<?php if ( ! empty( $diag['log'] ) ) : ?>
+								<details>
+									<summary><?php esc_html_e( 'Per-batch log', 'mavo-dashboard' ); ?></summary>
+									<ul>
+										<?php foreach ( (array) $diag['log'] as $line ) : ?>
+											<li><?php echo esc_html( $line ); ?></li>
+										<?php endforeach; ?>
+									</ul>
+								</details>
+							<?php endif; ?>
 							<?php if ( ! empty( $diag['unresolved_samples'] ) ) : ?>
 								<p><strong><?php esc_html_e( 'Internal links that did NOT resolve to a published post:', 'mavo-dashboard' ); ?></strong></p>
 								<ul>
@@ -634,7 +657,7 @@ CSS;
 			credentials: 'same-origin',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: body.toString()
-		}).then(function (r) { return r.text(); }).then(cb);
+		}).then(function (r) { return r.text(); }).then(cb).catch(function () { cb(''); });
 	}
 	function postJSON(data, cb) {
 		return post(data, function (txt) { var j; try { j = JSON.parse(txt); } catch (e) { j = null; } cb(j); });
@@ -751,9 +774,9 @@ CSS;
 		postJSON({ action: 'mavo_lm_rebuild_start', nonce: MAVO_LM.nonce }, function (res) {
 			if (!res || !res.success) { txt.textContent = 'Error.'; btn.disabled = false; return; }
 			var total = res.data.total || 0;
-			function step(offset) {
-				postJSON({ action: 'mavo_lm_rebuild_batch', nonce: MAVO_LM.nonce, offset: offset }, function (r) {
-					if (!r || !r.success) { txt.textContent = 'Error.'; btn.disabled = false; return; }
+			function step(after) {
+				postJSON({ action: 'mavo_lm_rebuild_batch', nonce: MAVO_LM.nonce, after: after }, function (r) {
+					if (!r || !r.success) { txt.textContent = 'Error (the rebuild stopped — likely a server timeout). Click Recalculate to resume is not supported; try again.'; btn.disabled = false; return; }
 					var processed = r.data.processed;
 					var pct = total ? Math.min(100, Math.round(processed / total * 100)) : 100;
 					bar.style.width = pct + '%';
@@ -765,7 +788,7 @@ CSS;
 						setTimeout(function () { prog.hidden = true; }, 4000);
 						loadGraph();
 					} else {
-						step(offset + MAVO_LM.batch);
+						step(r.data.after);
 					}
 				});
 			}

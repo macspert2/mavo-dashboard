@@ -287,6 +287,22 @@ class Mavo_Helpers {
 			}
 		}
 
+		// Renamed posts: old slug stored by WordPress for 301 redirects.
+		foreach ( $candidates as $name ) {
+			if ( '' === $name ) {
+				continue;
+			}
+			$old = (int) $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_old_slug' AND meta_value = %s LIMIT 1",
+					$name
+				)
+			);
+			if ( $old && self::is_valid_target( $old ) ) {
+				return $old;
+			}
+		}
+
 		return 0;
 	}
 
