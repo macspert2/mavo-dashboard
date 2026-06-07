@@ -196,8 +196,14 @@ class Mavo_Helpers {
 	/**
 	 * Resolve an internal URL to a published post ID, or 0 if it doesn't
 	 * resolve to one. Used by the link-map rebuild.
+	 *
+	 * Tries, in order: url_to_postid() on the absolute URL, then a direct
+	 * post_name lookup on the last path segment (handles Polylang language
+	 * prefixes, mismatched www/host, query strings and ?p=/?page_id= forms).
 	 */
 	public static function resolve_internal( $url ) {
+		global $wpdb;
+
 		$url = trim( (string) $url );
 		if ( '' === $url
 			|| 0 === stripos( $url, '#' )
@@ -206,36 +212,79 @@ class Mavo_Helpers {
 			return 0;
 		}
 
-		// Drop the fragment.
-		$url = preg_replace( '/#.*$/', '', $url );
+		// Keep the query for ?p= detection, but work on a fragment-free copy.
+		$nofrag = preg_replace( '/#.*$/', '', $url );
 
-		// Make absolute if the link is protocol-relative or root/relative.
-		if ( ! preg_match( '#^https?://#i', $url ) ) {
-			if ( 0 === strpos( $url, '//' ) ) {
-				$url = ( is_ssl() ? 'https:' : 'http:' ) . $url;
-			} else {
-				$url = home_url( '/' . ltrim( $url, '/' ) );
-			}
-		}
-
-		$id = url_to_postid( $url );
-
-		// Fallback: match the last path segment against a post slug.
-		if ( ! $id ) {
-			$path = (string) wp_parse_url( $url, PHP_URL_PATH );
-			$segs = array_values( array_filter( explode( '/', $path ) ) );
-			$slug = end( $segs );
-			if ( $slug ) {
-				$p = get_page_by_path( $slug, OBJECT, 'post' );
-				if ( $p ) {
-					$id = (int) $p->ID;
+		// ?p=123 / ?page_id=123 style links.
+		$qs = (string) wp_parse_url( $nofrag, PHP_URL_QUERY );
+		if ( '' !== $qs ) {
+			parse_str( $qs, $args );
+			foreach ( array( 'p', 'page_id' ) as $k ) {
+				if ( ! empty( $args[ $k ] ) && is_numeric( $args[ $k ] ) ) {
+					$id = (int) $args[ $k ];
+					if ( self::is_valid_target( $id ) ) {
+						return $id;
+					}
 				}
 			}
 		}
 
-		if ( $id && 'post' === get_post_type( $id ) && 'publish' === get_post_status( $id ) ) {
+		// Strip the query for path-based resolution.
+		$clean = preg_replace( '/\?.*$/', '', $nofrag );
+		if ( '' === $clean ) {
+			return 0;
+		}
+
+		// Absolutise protocol-relative / root-relative / relative links.
+		$abs = $clean;
+		if ( ! preg_match( '#^https?://#i', $abs ) ) {
+			if ( 0 === strpos( $abs, '//' ) ) {
+				$abs = ( is_ssl() ? 'https:' : 'http:' ) . $abs;
+			} else {
+				$abs = home_url( '/' . ltrim( $abs, '/' ) );
+			}
+		}
+
+		// 1) WordPress' own resolver.
+		$id = url_to_postid( $abs );
+		if ( $id && self::is_valid_target( $id ) ) {
 			return (int) $id;
 		}
+
+		// 2) Last path segment → post slug (indexed, host/language agnostic).
+		$path = (string) wp_parse_url( $abs, PHP_URL_PATH );
+		$segs = array_values( array_filter( explode( '/', $path ), 'strlen' ) );
+		if ( empty( $segs ) ) {
+			return 0;
+		}
+		$slug = rawurldecode( end( $segs ) );
+		$slug = preg_replace( '/\.(html?|php|aspx?)$/i', '', $slug ); // strip stray file suffixes
+
+		$candidates = array( $slug );
+		$sanitized  = sanitize_title( $slug );
+		if ( $sanitized && $sanitized !== $slug ) {
+			$candidates[] = $sanitized;
+		}
+		foreach ( $candidates as $name ) {
+			if ( '' === $name ) {
+				continue;
+			}
+			$id = (int) $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = 'post' AND post_status = 'publish' LIMIT 1",
+					$name
+				)
+			);
+			if ( $id ) {
+				return $id;
+			}
+		}
+
 		return 0;
+	}
+
+	/** True if $id is a published post. */
+	private static function is_valid_target( $id ) {
+		return $id && 'post' === get_post_type( $id ) && 'publish' === get_post_status( $id );
 	}
 }

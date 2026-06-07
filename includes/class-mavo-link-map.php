@@ -324,6 +324,17 @@ class Mavo_Link_Map {
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
 		$wpdb->query( "TRUNCATE TABLE {$table}" );
 
+		// Reset rebuild diagnostics.
+		set_transient(
+			self::OPTION_BUILT . '_stats',
+			array(
+				'candidates' => 0,
+				'resolved'   => 0,
+				'samples'    => array(),
+			),
+			DAY_IN_SECONDS
+		);
+
 		$total = (int) $wpdb->get_var(
 			"SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = 'post' AND post_status = 'publish'"
 		);
@@ -347,6 +358,15 @@ class Mavo_Link_Map {
 			)
 		);
 
+		$stats = get_transient( self::OPTION_BUILT . '_stats' );
+		if ( ! is_array( $stats ) ) {
+			$stats = array(
+				'candidates' => 0,
+				'resolved'   => 0,
+				'samples'    => array(),
+			);
+		}
+
 		$rows = array();
 		foreach ( $ids as $id ) {
 			$id   = (int) $id;
@@ -356,18 +376,23 @@ class Mavo_Link_Map {
 			}
 			$parsed = Mavo_Helpers::parse_links_images( $post->post_content );
 			foreach ( $parsed['internal'] as $link ) {
+				++$stats['candidates'];
 				$target = Mavo_Helpers::resolve_internal( $link['url'] );
 				if ( $target && $target !== $id ) {
+					++$stats['resolved'];
 					$rows[] = array(
 						$id,
 						$target,
 						mb_substr( (string) $link['text'], 0, 1000 ),
 						mb_substr( (string) $link['url'], 0, 2000 ),
 					);
+				} elseif ( ! $target && count( $stats['samples'] ) < 25 ) {
+					$stats['samples'][] = $link['url'];
 				}
 			}
 		}
 		$this->insert_links( $rows );
+		set_transient( self::OPTION_BUILT . '_stats', $stats, DAY_IN_SECONDS );
 
 		$processed = $offset + count( $ids );
 		$done      = count( $ids ) < $batch;
@@ -376,11 +401,15 @@ class Mavo_Link_Map {
 			update_option(
 				self::OPTION_BUILT,
 				array(
-					'time'  => time(),
-					'links' => $total_links,
+					'time'       => time(),
+					'links'      => $total_links,
+					'candidates' => (int) $stats['candidates'],
+					'resolved'   => (int) $stats['resolved'],
+					'samples'    => array_slice( (array) $stats['samples'], 0, 25 ),
 				),
 				false
 			);
+			delete_transient( self::OPTION_BUILT . '_stats' );
 		}
 
 		wp_send_json_success(
@@ -418,12 +447,30 @@ class Mavo_Link_Map {
 		if ( ! is_array( $info ) || empty( $info['time'] ) ) {
 			return '';
 		}
-		return sprintf(
+		$label = sprintf(
 			/* translators: 1: date/time, 2: number of links */
 			__( 'Last built: %1$s · %2$s links', 'mavo-dashboard' ),
 			wp_date( 'Y-m-d H:i', (int) $info['time'] ),
 			number_format_i18n( (int) $info['links'] )
 		);
+		if ( isset( $info['candidates'] ) ) {
+			$label .= ' ' . sprintf(
+				/* translators: 1: resolved count, 2: total internal candidates */
+				__( '(resolved %1$s of %2$s internal links found)', 'mavo-dashboard' ),
+				number_format_i18n( (int) $info['resolved'] ),
+				number_format_i18n( (int) $info['candidates'] )
+			);
+		}
+		return $label;
+	}
+
+	/** A few example internal URLs that did NOT resolve (diagnostic aid). */
+	private function unresolved_samples() {
+		$info = get_option( self::OPTION_BUILT );
+		if ( ! is_array( $info ) || empty( $info['samples'] ) ) {
+			return array();
+		}
+		return (array) $info['samples'];
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -452,6 +499,17 @@ class Mavo_Link_Map {
 						<div class="mavo-lm-progress-bar"><span></span></div>
 						<span class="mavo-lm-progress-text"></span>
 					</div>
+					<?php $samples = $this->unresolved_samples(); ?>
+					<?php if ( ! empty( $samples ) ) : ?>
+						<details class="mavo-lm-diag">
+							<summary><?php esc_html_e( 'Examples of internal links that did NOT resolve to a published post', 'mavo-dashboard' ); ?></summary>
+							<ul>
+								<?php foreach ( $samples as $s ) : ?>
+									<li><?php echo esc_html( $s ); ?></li>
+								<?php endforeach; ?>
+							</ul>
+						</details>
+					<?php endif; ?>
 				</div>
 
 				<div id="mavo-lm-body">
@@ -487,6 +545,10 @@ class Mavo_Link_Map {
 .mavo-lm-progress-bar { flex: 1; height: 10px; background: #f0f0f1; border-radius: 5px; overflow: hidden; }
 .mavo-lm-progress-bar span { display: block; height: 100%; width: 0; background: #2271b1; transition: width .2s ease; }
 .mavo-lm-progress-text { font-size: 12px; color: #50575e; white-space: nowrap; }
+.mavo-lm-diag { flex-basis: 100%; font-size: 12px; color: #50575e; }
+.mavo-lm-diag summary { cursor: pointer; }
+.mavo-lm-diag ul { margin: 6px 0 0; max-height: 160px; overflow: auto; }
+.mavo-lm-diag li { font-family: Menlo, Consolas, monospace; word-break: break-all; }
 
 #mavo-lm-body { flex: 1 1 0; min-height: 0; display: flex; gap: 12px; }
 .mavo-part { background: #fff; border: 1px solid #c3c4c7; border-radius: 6px; box-shadow: 0 1px 1px rgba(0,0,0,.04); min-height: 0; }
