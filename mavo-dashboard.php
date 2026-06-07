@@ -387,7 +387,7 @@ class Mavo_Dashboard {
 		$build = function ( $series ) use ( $month_index, $denom, $w, $h, $pad ) {
 			$vals  = array();
 			foreach ( $series as $p ) {
-				$vals[] = (int) $p['views'];
+				$vals[] = (float) $p['views'];
 			}
 			$min   = min( $vals );
 			$max   = max( $vals );
@@ -396,7 +396,7 @@ class Mavo_Dashboard {
 			foreach ( array_values( $series ) as $i => $p ) {
 				$idx = isset( $month_index[ $p['month'] ] ) ? $month_index[ $p['month'] ] : $i;
 				$x   = $pad + ( $idx / $denom ) * ( $w - 2 * $pad );
-				$y   = $pad + ( 1 - ( ( (int) $p['views'] - $min ) / $range ) ) * ( $h - 2 * $pad );
+				$y   = $pad + ( 1 - ( ( (float) $p['views'] - $min ) / $range ) ) * ( $h - 2 * $pad );
 				$out[] = round( $x, 1 ) . ',' . round( $y, 1 );
 			}
 			return $out;
@@ -407,10 +407,34 @@ class Mavo_Dashboard {
 		$last_xy     = explode( ',', end( $post_coords ) );
 
 		$totals_line = '';
+		$totals_by_month = array();
 		if ( count( $totals ) >= 2 ) {
 			$totals_line = sprintf(
 				'<polyline fill="none" stroke="#dba617" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" points="%s" />',
 				esc_attr( implode( ' ', $build( $totals ) ) )
+			);
+			foreach ( $totals as $p ) {
+				$totals_by_month[ $p['month'] ] = (int) $p['views'];
+			}
+		}
+
+		// Relative performance: post views / total views, per month.
+		// Values are tiny, so $build normalises this line to its own min/max.
+		$ratio_line = '';
+		$ratio      = array();
+		foreach ( $points as $p ) {
+			$m = $p['month'];
+			if ( isset( $totals_by_month[ $m ] ) && $totals_by_month[ $m ] > 0 ) {
+				$ratio[] = array(
+					'month' => $m,
+					'views' => (int) $p['views'] / $totals_by_month[ $m ],
+				);
+			}
+		}
+		if ( count( $ratio ) >= 2 ) {
+			$ratio_line = sprintf(
+				'<polyline fill="none" stroke="#00a32a" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" points="%s" />',
+				esc_attr( implode( ' ', $build( $ratio ) ) )
 			);
 		}
 
@@ -420,20 +444,22 @@ class Mavo_Dashboard {
 		}
 		$title = sprintf(
 			/* translators: 1: first month, 2: last month, 3: latest value */
-			__( '%1$s → %2$s · latest (3-mo rolling): %3$s views · gold line = all-site total', 'mavo-dashboard' ),
+			__( '%1$s → %2$s · latest (3-mo rolling): %3$s views · blue = post, gold = all-site total, green = relative share', 'mavo-dashboard' ),
 			$points[0]['month'],
 			$points[ count( $points ) - 1 ]['month'],
 			number_format_i18n( end( $post_vals ) )
 		);
 
 		return sprintf(
-			'<svg class="mavo-spark" viewBox="0 0 %1$d %2$d" width="%1$d" height="%2$d" preserveAspectRatio="none" role="img" aria-label="%7$s"><title>%7$s</title>%6$s<polyline fill="none" stroke="#2271b1" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="%3$s" /><circle cx="%4$s" cy="%5$s" r="2" fill="#2271b1" /></svg>',
+			'<svg class="mavo-spark" viewBox="0 0 %1$d %2$d" width="%1$d" height="%2$d" preserveAspectRatio="none" role="img" aria-label="%9$s"><title>%9$s</title>%6$s<polyline fill="none" stroke="#2271b1" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="%3$s" />%7$s<circle cx="%4$s" cy="%5$s" r="2" fill="#2271b1" /></svg>',
 			$w,
 			$h,
 			esc_attr( $post_poly ),
 			esc_attr( $last_xy[0] ),
 			esc_attr( $last_xy[1] ),
 			$totals_line, // already escaped above
+			$ratio_line,  // already escaped above
+			'', // reserved
 			esc_attr( $title )
 		);
 	}
