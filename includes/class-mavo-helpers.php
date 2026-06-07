@@ -108,6 +108,7 @@ class Mavo_Helpers {
 			'schottland', 'spanien', 'asie', 'ameriques', 'afrique', 'oceanie',
 			'tour-du-monde-2016', 'vivre-en-angleterre', 'rando', 'wanderung',
 			'hiking', 'velo', 'bebe', 'campervan', 'bateau', 'ski',
+			'uk-en', 'england-en', 'france-en', 'london-en', 'portugal-en',
 		);
 		return apply_filters( 'mavo_dashboard_tag_slugs', $slugs );
 	}

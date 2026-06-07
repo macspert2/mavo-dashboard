@@ -175,36 +175,61 @@ class Mavo_Link_Map {
 			$tt_ids[]                                 = (int) $t->term_taxonomy_id;
 		}
 
-		$edges = array();
-		if ( count( $tt_ids ) >= 2 && $this->table_exists() ) {
+		$edges        = array();
+		$self_by_term = array();
+		if ( ! empty( $tt_ids ) && $this->table_exists() ) {
 			$table = $this->table();
 			$in    = implode( ',', array_map( 'intval', $tt_ids ) );
 			$tr    = $wpdb->term_relationships;
-			// One row per qualifying internal link, folded to an undirected
-			// tag pair (self-pairs excluded), counted distinct per pair.
+
+			if ( count( $tt_ids ) >= 2 ) {
+				// One row per qualifying internal link, folded to an undirected
+				// tag pair (self-pairs excluded), counted distinct per pair.
+				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
+				$rows = $wpdb->get_results(
+					"SELECT LEAST(s.term_taxonomy_id, t.term_taxonomy_id) AS a,
+					        GREATEST(s.term_taxonomy_id, t.term_taxonomy_id) AS b,
+					        COUNT(DISTINCT l.id) AS weight
+					 FROM {$table} l
+					 JOIN {$tr} s ON s.object_id = l.source_id AND s.term_taxonomy_id IN ({$in})
+					 JOIN {$tr} t ON t.object_id = l.target_id AND t.term_taxonomy_id IN ({$in})
+					 WHERE s.term_taxonomy_id <> t.term_taxonomy_id
+					 GROUP BY a, b"
+				);
+				foreach ( (array) $rows as $r ) {
+					$a = isset( $tt_to_term[ (int) $r->a ] ) ? $tt_to_term[ (int) $r->a ] : 0;
+					$b = isset( $tt_to_term[ (int) $r->b ] ) ? $tt_to_term[ (int) $r->b ] : 0;
+					if ( $a && $b ) {
+						$edges[] = array(
+							'a' => $a,
+							'b' => $b,
+							'w' => (int) $r->weight,
+						);
+					}
+				}
+			}
+
+			// Intra-tag links: both source and target carry the same tag.
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
-			$rows = $wpdb->get_results(
-				"SELECT LEAST(s.term_taxonomy_id, t.term_taxonomy_id) AS a,
-				        GREATEST(s.term_taxonomy_id, t.term_taxonomy_id) AS b,
-				        COUNT(DISTINCT l.id) AS weight
+			$selfrows = $wpdb->get_results(
+				"SELECT s.term_taxonomy_id AS tt, COUNT(DISTINCT l.id) AS weight
 				 FROM {$table} l
 				 JOIN {$tr} s ON s.object_id = l.source_id AND s.term_taxonomy_id IN ({$in})
-				 JOIN {$tr} t ON t.object_id = l.target_id AND t.term_taxonomy_id IN ({$in})
-				 WHERE s.term_taxonomy_id <> t.term_taxonomy_id
-				 GROUP BY a, b"
+				 JOIN {$tr} t ON t.object_id = l.target_id AND t.term_taxonomy_id = s.term_taxonomy_id
+				 GROUP BY s.term_taxonomy_id"
 			);
-			foreach ( (array) $rows as $r ) {
-				$a = isset( $tt_to_term[ (int) $r->a ] ) ? $tt_to_term[ (int) $r->a ] : 0;
-				$b = isset( $tt_to_term[ (int) $r->b ] ) ? $tt_to_term[ (int) $r->b ] : 0;
-				if ( $a && $b ) {
-					$edges[] = array(
-						'a' => $a,
-						'b' => $b,
-						'w' => (int) $r->weight,
-					);
+			foreach ( (array) $selfrows as $r ) {
+				$term = isset( $tt_to_term[ (int) $r->tt ] ) ? $tt_to_term[ (int) $r->tt ] : 0;
+				if ( $term ) {
+					$self_by_term[ $term ] = (int) $r->weight;
 				}
 			}
 		}
+
+		foreach ( $nodes as &$node ) {
+			$node['self'] = isset( $self_by_term[ $node['id'] ] ) ? $self_by_term[ $node['id'] ] : 0;
+		}
+		unset( $node );
 
 		wp_send_json_success(
 			array(
@@ -283,13 +308,24 @@ class Mavo_Link_Map {
 		ob_start();
 		?>
 		<p class="mavo-lm-listhead">
-			<strong><?php echo esc_html( $ta->name ); ?></strong>
-			<span class="mavo-lm-arrows">&harr;</span>
-			<strong><?php echo esc_html( $tb->name ); ?></strong>
+			<?php if ( (int) $term_a === (int) $term_b ) : ?>
+				<?php esc_html_e( 'Within', 'mavo-dashboard' ); ?>
+				<strong><?php echo esc_html( $ta->name ); ?></strong>
+			<?php else : ?>
+				<strong><?php echo esc_html( $ta->name ); ?></strong>
+				<span class="mavo-lm-arrows">&harr;</span>
+				<strong><?php echo esc_html( $tb->name ); ?></strong>
+			<?php endif; ?>
 			<span class="mavo-count"><?php echo esc_html( number_format_i18n( count( $rows ) ) ); ?></span>
 		</p>
 		<?php if ( empty( $rows ) ) : ?>
-			<p class="mavo-empty"><?php esc_html_e( 'No internal links connect these two tags.', 'mavo-dashboard' ); ?></p>
+			<p class="mavo-empty">
+				<?php
+				echo ( (int) $term_a === (int) $term_b )
+					? esc_html__( 'No internal links between posts sharing this tag.', 'mavo-dashboard' )
+					: esc_html__( 'No internal links connect these two tags.', 'mavo-dashboard' );
+				?>
+			</p>
 		<?php else : ?>
 			<ul class="mavo-lm-links">
 				<?php foreach ( $rows as $r ) : ?>
@@ -626,7 +662,9 @@ class Mavo_Link_Map {
 .mavo-edge-g.hover .mavo-edge { stroke: #444; stroke-width: 1.8; }
 .mavo-edge-g.selected .mavo-edge { stroke: #2271b1; stroke-width: 2.4; }
 .mavo-node-dot { fill: #50575e; }
-.mavo-node-label { fill: #1d2327; font-family: inherit; cursor: default; }
+.mavo-node-label { fill: #1d2327; font-family: inherit; cursor: pointer; }
+.mavo-node-label.hover { fill: #2271b1; }
+.mavo-node-label.selected { fill: #2271b1; font-weight: 700; }
 .mavo-node-label.dim { fill: #c3c4c7; }
 .mavo-edge-weight { fill: #1d2327; font-size: 12px; font-weight: 700; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
 
@@ -649,6 +687,7 @@ CSS;
 	var NS = 'http://www.w3.org/2000/svg';
 	var nodeLabels = {};
 	var selectedG = null;
+	var selectedLabel = null;
 
 	function post(data, cb) {
 		var body = new URLSearchParams(data);
@@ -679,6 +718,7 @@ CSS;
 		var wrap = document.getElementById('mavo-lm-graph');
 		wrap.innerHTML = '';
 		selectedG = null;
+		selectedLabel = null;
 		if (!nodes || !nodes.length) { wrap.innerHTML = '<p class="mavo-empty">' + esc(MAVO_LM.i18n.nonodes) + '</p>'; return; }
 		if (!hasTable || !edges) { edges = []; }
 
@@ -725,8 +765,9 @@ CSS;
 			var lx = cx + (R + 10) * Math.cos(n.ang);
 			var ly = cy + (R + 10) * Math.sin(n.ang);
 			var fs = fontSize(n.count).toFixed(1);
+			var self = n.self || 0;
 			nodeHtml += '<circle class="mavo-node-dot" cx="' + n.x.toFixed(1) + '" cy="' + n.y.toFixed(1) + '" r="3"></circle>'
-				+ '<text class="mavo-node-label" data-id="' + n.id + '" x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" text-anchor="' + anchor + '" dominant-baseline="middle" font-size="' + fs + '">'
+				+ '<text class="mavo-node-label" data-id="' + n.id + '" data-self="' + self + '" data-x="' + n.x.toFixed(1) + '" data-y="' + (n.y - 8).toFixed(1) + '" x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" text-anchor="' + anchor + '" dominant-baseline="middle" font-size="' + fs + '">'
 				+ esc(n.label) + ' (' + n.count + ')</text>';
 		});
 
@@ -739,18 +780,42 @@ CSS;
 		var edgesLayer = svg.querySelector('.mavo-edges');
 		var overlay = svg.querySelector('.mavo-overlay');
 
-		function showWeight(g) {
-			overlay.innerHTML = '<text class="mavo-edge-weight" x="' + g.dataset.lx + '" y="' + g.dataset.ly + '" text-anchor="middle" dominant-baseline="middle">' + g.dataset.w + '</text>';
+		function showLabelAt(x, y, text) {
+			overlay.innerHTML = '<text class="mavo-edge-weight" x="' + x + '" y="' + y + '" text-anchor="middle" dominant-baseline="middle">' + text + '</text>';
 		}
-		function hideWeight() { overlay.innerHTML = ''; }
+		function hideLabel() { overlay.innerHTML = ''; }
+		function clearSelection() {
+			if (selectedG) { selectedG.classList.remove('selected'); selectedG = null; }
+			if (selectedLabel) { selectedLabel.classList.remove('selected'); selectedLabel = null; }
+		}
 
 		svg.querySelectorAll('.mavo-edge-g').forEach(function (g) {
-			g.addEventListener('mouseenter', function () { edgesLayer.appendChild(g); g.classList.add('hover'); showWeight(g); });
-			g.addEventListener('mouseleave', function () { g.classList.remove('hover'); if (g !== selectedG) { hideWeight(); } else { showWeight(g); } });
+			g.addEventListener('mouseenter', function () { edgesLayer.appendChild(g); g.classList.add('hover'); showLabelAt(g.dataset.lx, g.dataset.ly, g.dataset.w); });
+			g.addEventListener('mouseleave', function () {
+				g.classList.remove('hover');
+				if (g === selectedG) { showLabelAt(g.dataset.lx, g.dataset.ly, g.dataset.w); }
+				else if (!selectedLabel) { hideLabel(); }
+				else { showLabelAt(selectedLabel.dataset.x, selectedLabel.dataset.y, selectedLabel.dataset.self); }
+			});
 			g.addEventListener('click', function () {
-				if (selectedG) { selectedG.classList.remove('selected'); }
-				selectedG = g; g.classList.add('selected'); edgesLayer.appendChild(g); showWeight(g);
+				clearSelection();
+				selectedG = g; g.classList.add('selected'); edgesLayer.appendChild(g); showLabelAt(g.dataset.lx, g.dataset.ly, g.dataset.w);
 				loadLinks(g.dataset.a, g.dataset.b);
+			});
+		});
+
+		svg.querySelectorAll('.mavo-node-label').forEach(function (t) {
+			t.addEventListener('mouseenter', function () { t.classList.add('hover'); showLabelAt(t.dataset.x, t.dataset.y, t.dataset.self); });
+			t.addEventListener('mouseleave', function () {
+				t.classList.remove('hover');
+				if (t === selectedLabel) { showLabelAt(t.dataset.x, t.dataset.y, t.dataset.self); }
+				else if (!selectedG) { hideLabel(); }
+				else { showLabelAt(selectedG.dataset.lx, selectedG.dataset.ly, selectedG.dataset.w); }
+			});
+			t.addEventListener('click', function () {
+				clearSelection();
+				selectedLabel = t; t.classList.add('selected'); showLabelAt(t.dataset.x, t.dataset.y, t.dataset.self);
+				loadLinks(t.dataset.id, t.dataset.id);
 			});
 		});
 	}
