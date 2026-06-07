@@ -324,12 +324,15 @@ class Mavo_Link_Map {
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
 		$wpdb->query( "TRUNCATE TABLE {$table}" );
 
-		// Reset rebuild diagnostics.
-		set_transient( self::OPTION_BUILT . '_stats', $this->blank_stats(), DAY_IN_SECONDS );
-
 		$total = (int) $wpdb->get_var(
 			"SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = 'post' AND post_status = 'publish'"
 		);
+
+		// Reset rebuild diagnostics.
+		$stats          = $this->blank_stats();
+		$stats['total'] = $total;
+		set_transient( self::OPTION_BUILT . '_stats', $stats, DAY_IN_SECONDS );
+
 		wp_send_json_success( array( 'total' => $total ) );
 	}
 
@@ -436,6 +439,7 @@ class Mavo_Link_Map {
 	/** Empty diagnostics accumulator. */
 	private function blank_stats() {
 		return array(
+			'total'              => 0,
 			'posts'              => 0,
 			'internal'           => 0,
 			'resolved'           => 0,
@@ -504,13 +508,22 @@ class Mavo_Link_Map {
 					<?php if ( ! empty( $diag['time'] ) ) : ?>
 						<details class="mavo-lm-diag">
 							<summary><?php esc_html_e( 'Rebuild diagnostics', 'mavo-dashboard' ); ?></summary>
+							<p>
+								<strong><?php esc_html_e( 'Resolver code:', 'mavo-dashboard' ); ?></strong>
+								<?php if ( method_exists( 'Mavo_Helpers', 'is_image_url' ) ) : ?>
+									<?php esc_html_e( 'up to date ✓', 'mavo-dashboard' ); ?>
+								<?php else : ?>
+									<span style="color:#d63638"><?php esc_html_e( 'OUTDATED — class-mavo-helpers.php is not deployed / OPcache is stale. Update it and clear OPcache before rebuilding.', 'mavo-dashboard' ); ?></span>
+								<?php endif; ?>
+							</p>
 							<p class="mavo-lm-diag-counts">
 								<?php
 								echo esc_html(
 									sprintf(
 										/* translators: link-bucket counts from the last rebuild */
-										__( 'Posts scanned: %1$s · internal links: %2$s (resolved %3$s) · external/other: %4$s · booking: %5$s · discovercars: %6$s', 'mavo-dashboard' ),
+										__( 'Posts scanned: %1$s of %2$s · internal links: %3$s (resolved %4$s) · external/other: %5$s · booking: %6$s · discovercars: %7$s', 'mavo-dashboard' ),
 										number_format_i18n( (int) ( $diag['posts'] ?? 0 ) ),
+										number_format_i18n( (int) ( $diag['total'] ?? 0 ) ),
 										number_format_i18n( (int) ( $diag['internal'] ?? 0 ) ),
 										number_format_i18n( (int) ( $diag['resolved'] ?? 0 ) ),
 										number_format_i18n( (int) ( $diag['other'] ?? 0 ) ),

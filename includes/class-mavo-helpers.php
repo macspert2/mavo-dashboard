@@ -116,6 +116,12 @@ class Mavo_Helpers {
 	/* Content parsing                                                     */
 	/* ------------------------------------------------------------------ */
 
+	/** True if the URL points to an image file (by extension). */
+	public static function is_image_url( $url ) {
+		$path = (string) wp_parse_url( preg_replace( '/[#?].*$/', '', (string) $url ), PHP_URL_PATH );
+		return (bool) preg_match( '/\.(jpe?g|png|gif|webp|svg|bmp|tiff?|avif|ico|heic)$/i', $path );
+	}
+
 	/** Normalised host of this site (www. stripped, lower-cased). */
 	public static function site_host() {
 		return preg_replace( '#^www\.#', '', strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ) );
@@ -153,7 +159,8 @@ class Mavo_Helpers {
 				if ( '' === $href
 					|| 0 === stripos( $href, '#' )
 					|| 0 === stripos( $href, 'mailto:' )
-					|| 0 === stripos( $href, 'tel:' ) ) {
+					|| 0 === stripos( $href, 'tel:' )
+					|| self::is_image_url( $href ) ) { // skip lightbox/file links to images
 					continue;
 				}
 				$host = wp_parse_url( $href, PHP_URL_HOST );
