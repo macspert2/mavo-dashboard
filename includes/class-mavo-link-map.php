@@ -325,15 +325,7 @@ class Mavo_Link_Map {
 		$wpdb->query( "TRUNCATE TABLE {$table}" );
 
 		// Reset rebuild diagnostics.
-		set_transient(
-			self::OPTION_BUILT . '_stats',
-			array(
-				'candidates' => 0,
-				'resolved'   => 0,
-				'samples'    => array(),
-			),
-			DAY_IN_SECONDS
-		);
+		set_transient( self::OPTION_BUILT . '_stats', $this->blank_stats(), DAY_IN_SECONDS );
 
 		$total = (int) $wpdb->get_var(
 			"SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = 'post' AND post_status = 'publish'"
@@ -360,11 +352,7 @@ class Mavo_Link_Map {
 
 		$stats = get_transient( self::OPTION_BUILT . '_stats' );
 		if ( ! is_array( $stats ) ) {
-			$stats = array(
-				'candidates' => 0,
-				'resolved'   => 0,
-				'samples'    => array(),
-			);
+			$stats = $this->blank_stats();
 		}
 
 		$rows = array();
@@ -374,9 +362,20 @@ class Mavo_Link_Map {
 			if ( ! $post ) {
 				continue;
 			}
+			++$stats['posts'];
 			$parsed = Mavo_Helpers::parse_links_images( $post->post_content );
+
+			$stats['booking']  += count( $parsed['booking'] );
+			$stats['discover'] += count( $parsed['discover'] );
+			$stats['other']    += count( $parsed['other'] );
+			foreach ( $parsed['other'] as $o ) {
+				if ( count( $stats['other_samples'] ) < 25 ) {
+					$stats['other_samples'][] = $o['url'];
+				}
+			}
+
 			foreach ( $parsed['internal'] as $link ) {
-				++$stats['candidates'];
+				++$stats['internal'];
 				$target = Mavo_Helpers::resolve_internal( $link['url'] );
 				if ( $target && $target !== $id ) {
 					++$stats['resolved'];
@@ -386,8 +385,8 @@ class Mavo_Link_Map {
 						mb_substr( (string) $link['text'], 0, 1000 ),
 						mb_substr( (string) $link['url'], 0, 2000 ),
 					);
-				} elseif ( ! $target && count( $stats['samples'] ) < 25 ) {
-					$stats['samples'][] = $link['url'];
+				} elseif ( ! $target && count( $stats['unresolved_samples'] ) < 25 ) {
+					$stats['unresolved_samples'][] = $link['url'];
 				}
 			}
 		}
@@ -397,18 +396,10 @@ class Mavo_Link_Map {
 		$processed = $offset + count( $ids );
 		$done      = count( $ids ) < $batch;
 		if ( $done ) {
-			$total_links = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->table()}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
-			update_option(
-				self::OPTION_BUILT,
-				array(
-					'time'       => time(),
-					'links'      => $total_links,
-					'candidates' => (int) $stats['candidates'],
-					'resolved'   => (int) $stats['resolved'],
-					'samples'    => array_slice( (array) $stats['samples'], 0, 25 ),
-				),
-				false
-			);
+			$total_links     = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->table()}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
+			$stats['time']   = time();
+			$stats['links']  = $total_links;
+			update_option( self::OPTION_BUILT, $stats, false );
 			delete_transient( self::OPTION_BUILT . '_stats' );
 		}
 
@@ -442,6 +433,20 @@ class Mavo_Link_Map {
 		$wpdb->query( $wpdb->prepare( $sql, $values ) );
 	}
 
+	/** Empty diagnostics accumulator. */
+	private function blank_stats() {
+		return array(
+			'posts'              => 0,
+			'internal'           => 0,
+			'resolved'           => 0,
+			'booking'            => 0,
+			'discover'           => 0,
+			'other'              => 0,
+			'unresolved_samples' => array(),
+			'other_samples'      => array(),
+		);
+	}
+
 	private function built_label() {
 		$info = get_option( self::OPTION_BUILT );
 		if ( ! is_array( $info ) || empty( $info['time'] ) ) {
@@ -453,24 +458,20 @@ class Mavo_Link_Map {
 			wp_date( 'Y-m-d H:i', (int) $info['time'] ),
 			number_format_i18n( (int) $info['links'] )
 		);
-		if ( isset( $info['candidates'] ) ) {
+		if ( isset( $info['internal'] ) ) {
 			$label .= ' ' . sprintf(
 				/* translators: 1: resolved count, 2: total internal candidates */
 				__( '(resolved %1$s of %2$s internal links found)', 'mavo-dashboard' ),
 				number_format_i18n( (int) $info['resolved'] ),
-				number_format_i18n( (int) $info['candidates'] )
+				number_format_i18n( (int) $info['internal'] )
 			);
 		}
 		return $label;
 	}
 
-	/** A few example internal URLs that did NOT resolve (diagnostic aid). */
-	private function unresolved_samples() {
+	private function diag() {
 		$info = get_option( self::OPTION_BUILT );
-		if ( ! is_array( $info ) || empty( $info['samples'] ) ) {
-			return array();
-		}
-		return (array) $info['samples'];
+		return is_array( $info ) ? $info : array();
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -499,15 +500,42 @@ class Mavo_Link_Map {
 						<div class="mavo-lm-progress-bar"><span></span></div>
 						<span class="mavo-lm-progress-text"></span>
 					</div>
-					<?php $samples = $this->unresolved_samples(); ?>
-					<?php if ( ! empty( $samples ) ) : ?>
+					<?php $diag = $this->diag(); ?>
+					<?php if ( ! empty( $diag['time'] ) ) : ?>
 						<details class="mavo-lm-diag">
-							<summary><?php esc_html_e( 'Examples of internal links that did NOT resolve to a published post', 'mavo-dashboard' ); ?></summary>
-							<ul>
-								<?php foreach ( $samples as $s ) : ?>
-									<li><?php echo esc_html( $s ); ?></li>
-								<?php endforeach; ?>
-							</ul>
+							<summary><?php esc_html_e( 'Rebuild diagnostics', 'mavo-dashboard' ); ?></summary>
+							<p class="mavo-lm-diag-counts">
+								<?php
+								echo esc_html(
+									sprintf(
+										/* translators: link-bucket counts from the last rebuild */
+										__( 'Posts scanned: %1$s · internal links: %2$s (resolved %3$s) · external/other: %4$s · booking: %5$s · discovercars: %6$s', 'mavo-dashboard' ),
+										number_format_i18n( (int) ( $diag['posts'] ?? 0 ) ),
+										number_format_i18n( (int) ( $diag['internal'] ?? 0 ) ),
+										number_format_i18n( (int) ( $diag['resolved'] ?? 0 ) ),
+										number_format_i18n( (int) ( $diag['other'] ?? 0 ) ),
+										number_format_i18n( (int) ( $diag['booking'] ?? 0 ) ),
+										number_format_i18n( (int) ( $diag['discover'] ?? 0 ) )
+									)
+								);
+								?>
+							</p>
+							<?php if ( ! empty( $diag['unresolved_samples'] ) ) : ?>
+								<p><strong><?php esc_html_e( 'Internal links that did NOT resolve to a published post:', 'mavo-dashboard' ); ?></strong></p>
+								<ul>
+									<?php foreach ( (array) $diag['unresolved_samples'] as $s ) : ?>
+										<li><?php echo esc_html( $s ); ?></li>
+									<?php endforeach; ?>
+								</ul>
+							<?php endif; ?>
+							<?php if ( ! empty( $diag['other_samples'] ) ) : ?>
+								<p><strong><?php esc_html_e( 'Examples of links treated as external/other (check if these are actually your own site):', 'mavo-dashboard' ); ?></strong></p>
+								<ul>
+									<?php foreach ( (array) $diag['other_samples'] as $s ) : ?>
+										<li><?php echo esc_html( $s ); ?></li>
+									<?php endforeach; ?>
+								</ul>
+							<?php endif; ?>
 						</details>
 					<?php endif; ?>
 				</div>
