@@ -180,7 +180,7 @@ class Mavo_Dashboard {
 	 * of the timeline; the post line is drawn last so it reads as continuous.
 	 */
 	private function sparkline( $points, $totals = array() ) {
-		if ( count( $points ) < 2 ) {
+		if ( empty( $points ) ) {
 			return '<span class="mavo-dash-na">—</span>';
 		}
 		$w   = 120;
@@ -189,6 +189,14 @@ class Mavo_Dashboard {
 
 		// Shared month axis: prefer the (complete) totals timeline.
 		$axis_source = ( count( $totals ) >= 2 ) ? $totals : $points;
+
+		// A missing month means zero views for that post, so expand the post
+		// series to the full month axis, defaulting any absent month to 0.
+		$points = $this->fill_months( $points, $axis_source );
+		if ( count( $points ) < 2 ) {
+			return '<span class="mavo-dash-na">—</span>';
+		}
+
 		$month_index = array();
 		foreach ( $axis_source as $i => $p ) {
 			$month_index[ $p['month'] ] = $i;
@@ -256,7 +264,7 @@ class Mavo_Dashboard {
 		}
 		$title = sprintf(
 			/* translators: 1: first month, 2: last month, 3: latest value */
-			__( '%1$s → %2$s · latest (3-mo rolling): %3$s views · blue = post, gold = all-site total, green = relative share', 'mavo-dashboard' ),
+			__( '%1$s → %2$s · latest (monthly): %3$s views · blue = post, gold = all-site total, green = relative share', 'mavo-dashboard' ),
 			$points[0]['month'],
 			$points[ count( $points ) - 1 ]['month'],
 			number_format_i18n( end( $post_vals ) )
@@ -274,6 +282,30 @@ class Mavo_Dashboard {
 			'', // reserved
 			esc_attr( $title )
 		);
+	}
+
+	/**
+	 * Expand a monthly view series to the full month axis, filling any month
+	 * without a row as 0 views (missing rows mean no views that month).
+	 * Points are returned in the axis' chronological order.
+	 */
+	private function fill_months( $points, $axis ) {
+		if ( empty( $axis ) ) {
+			return $points;
+		}
+		$by_month = array();
+		foreach ( $points as $p ) {
+			$by_month[ $p['month'] ] = (int) $p['views'];
+		}
+		$out = array();
+		foreach ( $axis as $a ) {
+			$m     = $a['month'];
+			$out[] = array(
+				'month' => $m,
+				'views' => isset( $by_month[ $m ] ) ? $by_month[ $m ] : 0,
+			);
+		}
+		return $out;
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -373,7 +405,7 @@ class Mavo_Dashboard {
 					<th><?php esc_html_e( 'bpul', 'mavo-dashboard' ); ?></th>
 					<th><?php esc_html_e( 'maj', 'mavo-dashboard' ); ?></th>
 					<th class="mavo-views"><?php esc_html_e( 'Views', 'mavo-dashboard' ); ?></th>
-					<th class="mavo-trend"><?php esc_html_e( 'Trend (3-mo rolling)', 'mavo-dashboard' ); ?></th>
+					<th class="mavo-trend"><?php esc_html_e( 'Trend (monthly)', 'mavo-dashboard' ); ?></th>
 				</tr>
 			</thead>
 			<tbody>

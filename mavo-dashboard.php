@@ -35,7 +35,8 @@ if ( ! defined( 'MAVO_META_MAJ' ) ) {
 /**
  * Monthly view-history table (the WordPress prefix, e.g. wp_, is prepended
  * automatically). Columns used: post_id, snapshot_month (DATE, YYYY-MM-01),
- * views. Each row is a 3-month rolling total ending in snapshot_month.
+ * views. Each row holds that single month's view count. A post with no views
+ * in a given month has no row and is treated as 0 for that month.
  */
 if ( ! defined( 'MAVO_VIEWS_TABLE' ) ) {
 	define( 'MAVO_VIEWS_TABLE', 'rpp_monthly_snapshots' );
