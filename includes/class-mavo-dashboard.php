@@ -13,6 +13,12 @@ class Mavo_Dashboard {
 	const NONCE = 'mavo_dashboard';
 	const SLUG  = 'mavo-dashboard';
 
+	/**
+	 * Postmeta holding the five counts the post list shows, plus the
+	 * post_modified_gmt they were derived from. See counts().
+	 */
+	const META_COUNTS = '_mavo_dash_counts';
+
 	public function __construct() {
 		add_action( 'admin_enqueue_scripts', array( $this, 'assets' ) );
 		add_action( 'wp_ajax_mavo_posts', array( $this, 'ajax_posts' ) );
@@ -101,6 +107,76 @@ class Mavo_Dashboard {
 		}
 		$q = new WP_Query( $args );
 		return $q->posts;
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Per-post counts                                                     */
+	/* ------------------------------------------------------------------ */
+
+	/**
+	 * The five numbers one row of the post list shows: words, and the counts
+	 * of images, internal links, Booking links and DiscoverCars links.
+	 *
+	 * Cached in postmeta because producing them is expensive and the list is
+	 * long. Mavo_Helpers::parse_links_images() builds a DOMDocument from the
+	 * whole post body, and the list used to run it once per post on every
+	 * render — for the French Europe tag that is over 500 parses, and 500
+	 * posts' worth of link and image arrays held in memory, to print ten
+	 * integers per row. The arrays themselves are never used here; only
+	 * render_detail() needs them, and it parses one post on demand.
+	 *
+	 * The cache key is the post's own post_modified_gmt, stored alongside the
+	 * counts. That makes it self-invalidating: editing a post changes the
+	 * timestamp, so its next render recomputes — and only its own. There is no
+	 * save hook to forget and no way to serve a count that does not match the
+	 * content it came from.
+	 *
+	 * Reading costs nothing extra: WP_Query has already primed the meta cache
+	 * for every post in the list, in the one query it always makes.
+	 *
+	 * Known limitation, unchanged from before: the counts come from stored
+	 * post_content, so links that only exist in shortcode output are invisible
+	 * here, exactly as they are to the link map.
+	 *
+	 * @return array{words:int,images:int,internal:int,booking:int,discover:int}
+	 */
+	private function counts( WP_Post $post ) {
+		$stamp  = (string) $post->post_modified_gmt;
+		$cached = get_post_meta( $post->ID, self::META_COUNTS, true );
+
+		if ( is_array( $cached ) && isset( $cached['m'] ) && $cached['m'] === $stamp ) {
+			return array(
+				'words'    => (int) $cached['w'],
+				'images'   => (int) $cached['i'],
+				'internal' => (int) $cached['l'],
+				'booking'  => (int) $cached['b'],
+				'discover' => (int) $cached['d'],
+			);
+		}
+
+		$parsed = Mavo_Helpers::parse_links_images( $post->post_content );
+		$counts = array(
+			'words'    => (int) $parsed['words'],
+			'images'   => count( $parsed['images'] ),
+			'internal' => count( $parsed['internal'] ),
+			'booking'  => count( $parsed['booking'] ),
+			'discover' => count( $parsed['discover'] ),
+		);
+
+		update_post_meta(
+			$post->ID,
+			self::META_COUNTS,
+			array(
+				'm' => $stamp,
+				'w' => $counts['words'],
+				'i' => $counts['images'],
+				'l' => $counts['internal'],
+				'b' => $counts['booking'],
+				'd' => $counts['discover'],
+			)
+		);
+
+		return $counts;
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -353,7 +429,7 @@ class Mavo_Dashboard {
 		foreach ( $posts as $p ) {
 			$rows[] = array(
 				'p'     => $p,
-				'a'     => Mavo_Helpers::parse_links_images( $p->post_content ),
+				'c'     => $this->counts( $p ),
 				'views' => (int) get_post_meta( $p->ID, MAVO_META_VIEWS, true ),
 			);
 		}
@@ -412,7 +488,7 @@ class Mavo_Dashboard {
 			<?php foreach ( $rows as $r ) : ?>
 				<?php
 				$p     = $r['p'];
-				$a     = $r['a'];
+				$c     = $r['c'];
 				$thumb = get_the_post_thumbnail( $p->ID, array( 56, 56 ) );
 				?>
 				<tr class="mavo-post-row">
@@ -424,12 +500,12 @@ class Mavo_Dashboard {
 					<td class="mavo-slug"><a href="<?php echo esc_url( get_edit_post_link( $p->ID ) ); ?>" target="_blank" rel="noopener"><?php echo esc_html( $p->post_name ); ?></a></td>
 					<td><?php echo esc_html( get_the_date( 'Y-m-d', $p ) ); ?></td>
 					<td class="mavo-thumb"><?php echo $thumb ? $thumb : '<span class="mavo-dash-na">&mdash;</span>'; // phpcs:ignore WordPress.Security.EscapeOutput ?></td>
-					<td class="num"><?php echo esc_html( number_format_i18n( $a['words'] ) ); ?></td>
+					<td class="num"><?php echo esc_html( number_format_i18n( $c['words'] ) ); ?></td>
 					<td class="num"><?php echo esc_html( number_format_i18n( (int) $p->comment_count ) ); ?></td>
-					<td class="num"><?php echo esc_html( number_format_i18n( count( $a['images'] ) ) ); ?></td>
-					<td class="num"><?php echo esc_html( number_format_i18n( count( $a['internal'] ) ) ); ?></td>
-					<td class="num"><?php echo esc_html( number_format_i18n( count( $a['booking'] ) ) ); ?></td>
-					<td class="num"><?php echo esc_html( number_format_i18n( count( $a['discover'] ) ) ); ?></td>
+					<td class="num"><?php echo esc_html( number_format_i18n( $c['images'] ) ); ?></td>
+					<td class="num"><?php echo esc_html( number_format_i18n( $c['internal'] ) ); ?></td>
+					<td class="num"><?php echo esc_html( number_format_i18n( $c['booking'] ) ); ?></td>
+					<td class="num"><?php echo esc_html( number_format_i18n( $c['discover'] ) ); ?></td>
 					<td><?php echo esc_html( $this->meta_display( $p->ID, MAVO_META_BPUL ) ); ?></td>
 					<td><?php echo esc_html( $this->meta_display( $p->ID, MAVO_META_MAJ ) ); ?></td>
 					<td class="num mavo-views"><?php echo esc_html( number_format_i18n( $r['views'] ) ); ?></td>

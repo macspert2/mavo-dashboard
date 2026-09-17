@@ -6,7 +6,8 @@
  * Author:      Mavo
  * Text Domain: mavo-dashboard
  *
- * All hooks are admin-only, so nothing is ever enqueued or output on the frontend.
+ * Nothing below the is_admin() guard loads on the frontend at all — not the
+ * classes, not their hooks.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -48,6 +49,21 @@ if ( ! defined( 'MAVO_VIEWS_TABLE' ) ) {
  */
 if ( ! defined( 'MAVO_LINKS_TABLE' ) ) {
 	define( 'MAVO_LINKS_TABLE', 'mavo_internal_links' );
+}
+
+/**
+ * Everything below is wp-admin only.
+ *
+ * The header above says no hook of this plugin runs on the frontend, and that
+ * was very nearly true: both classes were instantiated on every request and
+ * registered seven hooks that simply never fired outside admin. Returning here
+ * makes the claim literally true, and saves a frontend request two object
+ * constructions it had no use for.
+ *
+ * is_admin() covers admin-ajax.php, which is where wp_ajax_* handlers run.
+ */
+if ( ! is_admin() ) {
+	return;
 }
 
 require_once __DIR__ . '/includes/class-mavo-helpers.php';

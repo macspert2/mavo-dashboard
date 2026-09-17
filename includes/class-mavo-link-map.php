@@ -500,6 +500,22 @@ class Mavo_Link_Map {
 	}
 
 	private function built_label() {
+		// A rebuild TRUNCATEs the table up front and only writes OPTION_BUILT
+		// from its final batch. So an interrupted run — a closed tab, a failed
+		// request — leaves a partly-filled table sitting under the *previous*
+		// run's date and link count, which is the one state where this label
+		// actively misleads. The progress transient tells them apart: it
+		// exists only between the first batch and the last.
+		$progress = get_transient( self::OPTION_BUILT . '_stats' );
+
+		if ( is_array( $progress ) && ! empty( $progress['batches'] ) ) {
+			return sprintf(
+				/* translators: %s: number of posts processed before the rebuild stopped */
+				__( 'Rebuild incomplete — stopped after %s posts, so the link table is partly filled. Run Recalculate again.', 'mavo-dashboard' ),
+				number_format_i18n( (int) $progress['posts'] )
+			);
+		}
+
 		$info = get_option( self::OPTION_BUILT );
 		if ( ! is_array( $info ) || empty( $info['time'] ) ) {
 			return '';

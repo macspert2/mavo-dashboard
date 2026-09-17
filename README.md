@@ -246,6 +246,27 @@ Links that are pure fragments (`#…`), `mailto:`, `tel:`, or that point directl
 an image file (lightbox/file links) are ignored. Host comparison strips a leading
 `www.` and is case-insensitive.
 
+### Cached counts — `_mavo_dash_counts`
+
+The post list shows only five numbers per row (words, images, internal, Booking,
+DiscoverCars) and never the link lists themselves. Producing them by parsing
+every post made a large tag expensive: the French *Europe* tag is 500+ posts, so
+each render meant 500 `DOMDocument` parses, and 500 posts' worth of link and
+image arrays held in memory, to print ten integers per row.
+
+Those five numbers are cached in the `_mavo_dash_counts` postmeta, stored with
+the `post_modified_gmt` they were derived from. A row is recomputed only when
+that timestamp no longer matches — so the cache is self-invalidating: editing a
+post refreshes its own row and nothing else, with no save hook to register or
+forget. Reading costs no extra queries, since `WP_Query` has already primed the
+meta cache for the whole list.
+
+The detail panel is unaffected: it needs the full lists, so it parses the single
+post you clicked, on demand.
+
+These rows are derived data. Deleting them is safe — they regenerate on the next
+view.
+
 ---
 
 ## Configuration constants
