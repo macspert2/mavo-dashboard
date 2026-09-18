@@ -21,6 +21,13 @@ if ( ! defined( 'ABSPATH' ) ) {
  *   MAVO_META_BPUL  : the "bpul" field, shown in the post list.
  *   MAVO_META_MAJ   : the "maj" field, shown in the post list.
  * You can also override these in wp-config.php.
+ *
+ * On this site MAVO_META_VIEWS is written by recent-post-popularity, and it is
+ * a rolling ~90-day total rather than a lifetime count: the daily cron sums the
+ * window and resets any post with no hits in it back to 0. So the Views column
+ * is "recently read", and an article that was popular years ago reads as 0 —
+ * which is also why the Trend sparkline beside it comes from the monthly
+ * snapshots table instead, the only place the longer history survives.
  * ---------------------------------------------------------------------------
  */
 if ( ! defined( 'MAVO_META_VIEWS' ) ) {
